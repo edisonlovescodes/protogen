@@ -1,19 +1,6 @@
-# Core Data Science
-numpy==1.26.4
-pandas==2.2.0
-requests==2.31.0
-
-# Machine Learning
-torch==2.6.0
-transformers==4.36.2
-tokenizers==0.15.1
-
-# Backend
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
+torch==2.6.0
+python-multipart==0.0.20
 pydantic==2.5.0
-
-# Utilities
-tqdm==4.66.1
-matplotlib==3.8.2
-seaborn==0.13.0
+requests==2.31.0
