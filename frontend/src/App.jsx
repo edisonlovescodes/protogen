@@ -19,7 +19,7 @@ function App() {
   const handleGenerate = async () => {
     setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/generate', {
+      const res = await fetch('https://protogen-backend.onrender.com/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -42,7 +42,7 @@ function App() {
     setSelectedSequence(index);
     
     try {
-      const res = await fetch('http://localhost:8000/predict_structure', {
+      const res = await fetch('https://protogen-backend.onrender.com/predict_structure', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sequence: sequence })
@@ -70,7 +70,7 @@ function App() {
     }
 
     try {
-      const res = await fetch('http://localhost:8000/export', {
+      const res = await fetch('https://protogen-backend.onrender.com/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sequences: generatedSequences })
