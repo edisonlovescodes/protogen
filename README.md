@@ -160,10 +160,8 @@ Generated sequences pass basic biochemical validation
 - **PyTorch**: Facebook AI Research
 - **FastAPI**: Sebastián Ramírez
 - **React**: Facebook/Meta
-- **Transformers Architecture**: Vaswani et al. (Attention Is All You Need)
+- **Transformers Architecture**: Vaswani et al.
 
 ---
 
 Built with ❤️ and lots of ☕
-
-*Demonstrating end-to-end ML engineering: data pipelines, model training, API development, and full-stack deployment.*
