@@ -1,192 +1,174 @@
-"""
-FastAPI backend for Protogen with property conditioning.
-"""
+"""Bounded generation from a versioned causal experiment bundle."""
 
+from contextlib import asynccontextmanager
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+from threading import Lock
+from typing import Annotated
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 import torch
-import json
-import sys
-from pathlib import Path
+from models.conditional_transformer import ConditionalProteinTransformer
+from data.scripts.tokenizer import AminoAcidTokenizer
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "models"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "data" / "scripts"))
+ROOT = Path(__file__).resolve().parents[1]
+KEYS = ["thermostable", "enzyme", "membrane", "structural", "flexible"]
+LOGGER = logging.getLogger(__name__)
+Score = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 
-from conditional_transformer import ConditionalProteinTransformer
-from tokenizer import AminoAcidTokenizer
 
-app = FastAPI(title="Protogen API", version="2.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-print("Loading model...")
-tokenizer = AminoAcidTokenizer.load("data/tokenizer.json")
-model = ConditionalProteinTransformer(vocab_size=24, d_model=256, num_layers=4, max_seq_length=512, num_properties=5)
-model.load_state_dict(torch.load("models/best_model.pt", map_location=device))
-model = model.to(device)
-model.eval()
-
-print("Conditional model loaded!")
+class Properties(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    thermostable: Score = 0.5
+    enzyme: Score = 0.5
+    membrane: Score = 0.5
+    structural: Score = 0.5
+    flexible: Score = 0.5
 
 
 class GenerateRequest(BaseModel):
-    max_length: int = 100
-    temperature: float = 1.0
-    num_sequences: int = 1  # Change this line
-    properties: dict = {
-        'thermostable': 0.5,
-        'enzyme': 0.5,
-        'membrane': 0.5,
-        'structural': 0.5,
-        'flexible': 0.5
-    }
+    model_config = ConfigDict(extra="forbid")
+    max_length: int = Field(100, ge=2, le=150, strict=True)
+    temperature: float = Field(1, gt=0, le=2, allow_inf_nan=False)
+    num_sequences: int = Field(1, ge=1, le=10, strict=True)
+    properties: Properties = Field(default_factory=Properties)
 
 
-class GenerateResponse(BaseModel):
-    sequences: list
-    tokens: list
-    properties: dict
+Sequence = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^[ARNDCQEGHILKMFPSTWYV]+$")]
 
-
-@app.get("/")
-def root():
-    return {
-        "name": "Protogen API",
-        "version": "2.0.0",
-        "description": "Generate proteins with specific properties using AI"
-    }
-
-
-@app.get("/health")
-def health():
-    return {"status": "healthy", "model": "conditional"}
-
-
-@app.post("/generate", response_model=GenerateResponse)
-def generate(request: GenerateRequest):
-    try:
-        sequences = []
-        tokens_list = []
-        
-        # Convert properties dict to list
-        prop_values = [
-            request.properties.get('thermostable', 0.5),
-            request.properties.get('enzyme', 0.5),
-            request.properties.get('membrane', 0.5),
-            request.properties.get('structural', 0.5),
-            request.properties.get('flexible', 0.5)
-        ]
-        
-        for _ in range(request.num_sequences):
-            generated_tokens = model.generate_with_properties(
-                properties=prop_values,
-                max_length=request.max_length,
-                temperature=request.temperature,
-                device=device
-            )
-            
-            sequence = tokenizer.decode(generated_tokens)
-            sequences.append(sequence)
-            tokens_list.append(generated_tokens)
-        
-        return GenerateResponse(
-            sequences=sequences,
-            tokens=tokens_list,
-            properties=request.properties
-        )
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/properties")
-def get_properties():
-    """Get available protein properties."""
-    return {
-        "properties": {
-            "thermostable": "Resistance to high temperatures (0-1)",
-            "enzyme": "Catalytic/enzymatic activity (0-1)",
-            "membrane": "Membrane-associated properties (0-1)",
-            "structural": "Structural stability (0-1)",
-            "flexible": "Molecular flexibility (0-1)"
-        }
-    }
 
 class ExportRequest(BaseModel):
-    sequences: list
-
-@app.post("/export")
-def export_fasta(request: ExportRequest):
-    """Export sequences as FASTA format."""
-    fasta_lines = []
-    
-    for i, seq in enumerate(request.sequences):
-        fasta_lines.append(f">Protogen_Sequence_{i+1}|Length={len(seq)}")
-        for j in range(0, len(seq), 60):
-            fasta_lines.append(seq[j:j+60])
-    
-    return {"fasta": "\n".join(fasta_lines)}
-
-class StructureRequest(BaseModel):
-    sequence: str
-@app.post("/predict_structure")
-async def predict_structure(request: StructureRequest):
-    """
-    Predict 3D structure using ESMFold API with retries.
-    
-    Args:
-        request: Request containing protein sequence
-        
-    Returns:
-        PDB structure data
-    """
-    try:
-        import requests
-        import time
-        
-        # Validate sequence length
-        if len(request.sequence) > 400:
-            return {"error": "Sequence too long (max 400 amino acids for API)", "success": False}
-        
-        # ESMFold API endpoint
-        url = "https://api.esmatlas.com/foldSequence/v1/pdb/"
-        
-        # Try up to 3 times with exponential backoff
-        max_retries = 5
-        for attempt in range(max_retries):
-            try:
-                response = requests.post(url, data=request.sequence, timeout=120)
-                
-                if response.status_code == 200:
-                    pdb_data = response.text
-                    return {"pdb": pdb_data, "success": True}
-                elif response.status_code == 503:
-                    if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 5  # Wait longer between retries
-                        print(f"API busy, retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        return {"error": "ESMFold API is currently overloaded. Try a shorter sequence or wait a few minutes.", "success": False}
-                else:
-                    return {"error": f"API returned status {response.status_code}", "success": False}
-            
-            except requests.Timeout:
-                return {"error": "Request timed out. Try a shorter sequence.", "success": False}
-    
-    except Exception as e:
-        return {"error": str(e), "success": False}
+    sequences: list[Sequence] = Field(min_length=1, max_length=10)
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+def create_app(bundle_path=None):
+    bundle = Path(bundle_path or os.getenv("PROTOGEN_MODEL_DIR", ROOT / "runs/latest")).resolve()
+    lock = Lock()
+
+    @asynccontextmanager
+    async def lifespan(app):
+        app.state.model = None
+        app.state.report = None
+        app.state.tokenizer = None
+        try:
+            report = json.loads((bundle / "report.json").read_text())
+            if report["protocol"] != "causal-exact-dedup-v1":
+                raise ValueError(
+                    "Unsupported model protocol; historical checkpoints need retraining"
+                )
+            digest = hashlib.sha256((bundle / "model.pt").read_bytes()).hexdigest()
+            if digest != report["model_sha256"]:
+                raise ValueError("Artifact checksum mismatch")
+            tokenizer = AminoAcidTokenizer.load(bundle / "tokenizer.json")
+            if tokenizer.aa_to_token != AminoAcidTokenizer().aa_to_token:
+                raise ValueError("Tokenizer does not match this model contract")
+            model = ConditionalProteinTransformer(**report["model_config"])
+            model.load_state_dict(
+                torch.load(bundle / "model.pt", map_location="cpu", weights_only=True), strict=True
+            )
+            model.eval()
+            app.state.model = model
+            app.state.tokenizer = tokenizer
+            app.state.report = report
+        except Exception:
+            LOGGER.exception("No usable causal bundle; generation will return 503")
+        yield
+        app.state.model = None
+
+    app = FastAPI(title="Protogen API", version="3.1.0", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            x.strip()
+            for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+            if x.strip()
+        ],
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
+
+    @app.get("/")
+    def root():
+        return {
+            "name": "Protogen",
+            "version": "3.1.0",
+            "scope": "Amino-acid sequence prototype conditioned on composition proxies",
+        }
+
+    @app.get("/health")
+    def health():
+        ready = app.state.model is not None
+        return JSONResponse(
+            status_code=200 if ready else 503,
+            content={
+                "status": "ready" if ready else "model_unavailable",
+                "model_loaded": ready,
+                "protocol": app.state.report["protocol"] if ready else None,
+                "model_sha256": app.state.report["model_sha256"] if ready else None,
+            },
+        )
+
+    @app.post("/generate")
+    def generate(request: GenerateRequest):
+        if app.state.model is None:
+            raise HTTPException(
+                503, "Run the documented local experiment to create a causal model bundle"
+            )
+        if request.max_length > app.state.model.pos_encoding.pe.shape[1]:
+            raise HTTPException(422, "Length exceeds model capacity")
+        props = request.properties.model_dump()
+        sequences = []
+        tokens = []
+        try:
+            with lock:
+                for _ in range(request.num_sequences):
+                    generated = app.state.model.generate_with_properties(
+                        [props[k] for k in KEYS],
+                        max_length=request.max_length,
+                        temperature=request.temperature,
+                        device="cpu",
+                    )
+                    sequences.append(app.state.tokenizer.decode(generated))
+                    tokens.append(generated)
+        except Exception:
+            LOGGER.exception("Generation failed")
+            raise HTTPException(500, "Sequence generation failed") from None
+        return {
+            "sequences": sequences,
+            "tokens": tokens,
+            "properties": props,
+            "protocol": app.state.report["protocol"],
+            "model_sha256": app.state.report["model_sha256"],
+            "note": "Composition proxy controls; biological function and conditioning efficacy are unvalidated",
+        }
+
+    @app.get("/properties")
+    def properties():
+        return {
+            "properties": {
+                k: "Heuristic composition proxy in [0,1]; not measured biological function"
+                for k in KEYS
+            }
+        }
+
+    @app.post("/export")
+    def export(request: ExportRequest):
+        lines = []
+        for i, seq in enumerate(request.sequences, 1):
+            lines.append(f">Protogen_Sequence_{i}|Length={len(seq)}")
+            lines.extend(seq[j : j + 60] for j in range(0, len(seq), 60))
+        return {"fasta": "\n".join(lines) + "\n"}
+
+    @app.post("/predict_structure")
+    def structure():
+        raise HTTPException(503, "External folding is not enabled in this local prototype")
+
+    return app
+
+
+app = create_app()

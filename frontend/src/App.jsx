@@ -1,239 +1,462 @@
-import React, { useState } from 'react';
+import { useState } from "react";
+import "./App.css";
 
-function App() {
-  const [generatedSequences, setGeneratedSequences] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [structureLoading, setStructureLoading] = useState(false);
-  const [selectedSequence, setSelectedSequence] = useState(null);
-  const [maxLength, setMaxLength] = useState(100);
-  const [temperature, setTemperature] = useState(1.0);
-  const [numSequences, setNumSequences] = useState(1);
-  const [properties, setProperties] = useState({
-    thermostable: 0.5,
-    enzyme: 0.5,
-    membrane: 0.5,
-    structural: 0.5,
-    flexible: 0.5
+const API = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+const source = "https://github.com/edisonlovescodes/protogen";
+const controls = [
+  ["thermostable", "Hydrophobic / aromatic", "Composition balance"],
+  ["enzyme", "Charged / polar", "Composition balance"],
+  ["membrane", "Hydrophobic fraction", "Residue enrichment"],
+  ["structural", "Aromatic / polar", "Composition balance"],
+  ["flexible", "Polar fraction", "Residue enrichment"],
+];
+const alphabet = "ARNDCQEGHILKMFPSTWYV";
+const category = (residue) =>
+  "AILMFVP".includes(residue)
+    ? "hydrophobic"
+    : "DEKR".includes(residue)
+      ? "charged"
+      : "other";
+
+function Icon({ copy = false, download = false }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d={
+          copy
+            ? "M8 8h12v12H8zM4 16V4h12"
+            : download
+              ? "M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4"
+              : "M4 12h15m-6-6 6 6-6 6"
+        }
+      />
+    </svg>
+  );
+}
+function PolymerMark() {
+  return (
+    <svg
+      className="polymer-mark"
+      viewBox="0 0 36 36"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path d="m18 3 13 7.5v15L18 33 5 25.5v-15Z" />
+      <path d="M5 10.5 18 18l13-7.5M18 18v15M18 3v15" />
+    </svg>
+  );
+}
+function SequenceMap() {
+  return (
+    <svg
+      viewBox="0 0 480 240"
+      className="sequence-map"
+      role="img"
+      aria-label="Schematic of the 20 amino-acid building blocks"
+    >
+      <path className="map-path" d="M25 62H405Q455 62 455 114T405 166H25" />
+      {alphabet.split("").map((aa, i) => {
+        const x = i < 10 ? 25 + i * 43 : 412 - (i - 10) * 43;
+        const y = i < 10 ? 62 : 166;
+        return (
+          <g key={aa} className={`map-node ${category(aa)}`}>
+            <circle cx={x} cy={y} r="14" />
+            <text x={x} y={y + 4}>
+              {aa}
+            </text>
+          </g>
+        );
+      })}
+      <text x="25" y="24" className="map-caption">
+        20 RESIDUES / ONE ALPHABET
+      </text>
+      <text x="25" y="219" className="map-caption">
+        A SCHEMATIC, NOT A GENERATED SEQUENCE
+      </text>
+      <path className="map-tick" d="M465 52v-8h-8M8 176v8h8" />
+    </svg>
+  );
+}
+async function post(path, payload) {
+  const response = await fetch(`${API}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
+  const body = await response.json();
+  if (!response.ok)
+    throw new Error(
+      typeof body.detail === "string"
+        ? body.detail
+        : "Check the generation settings and try again.",
+    );
+  return body;
+}
 
-  const handleGenerate = async () => {
+export default function App() {
+  const [properties, setProperties] = useState(
+    Object.fromEntries(controls.map(([key]) => [key, 0.5])),
+  );
+  const [maxLength, setMaxLength] = useState(100);
+  const [temperature, setTemperature] = useState(1);
+  const [numSequences, setNumSequences] = useState(1);
+  const [sequences, setSequences] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [copied, setCopied] = useState(null);
+  const [batchNumber, setBatchNumber] = useState(0);
+  async function generate(event) {
+    event.preventDefault();
+    setError("");
     setLoading(true);
     try {
-      const res = await fetch('https://protogen-backend.onrender.com/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          max_length: maxLength, 
-          temperature: temperature, 
-          num_sequences: numSequences,
-          properties: properties
-        })
+      const body = await post("/generate", {
+        properties,
+        max_length: maxLength,
+        temperature,
+        num_sequences: numSequences,
       });
-      const data = await res.json();
-      setGeneratedSequences(data.sequences);
+      setSequences(body.sequences);
+      setCopied(null);
+      setBatchNumber((n) => n + 1);
     } catch (e) {
-      alert('Error: ' + e.message);
+      setError(e.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  };
-
-  const handlePredictStructure = async (sequence, index) => {
-    setStructureLoading(true);
-    setSelectedSequence(index);
-    
+  }
+  async function exportFasta() {
+    setError("");
     try {
-      const res = await fetch('https://protogen-backend.onrender.com/predict_structure', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sequence: sequence })
-      });
-      const data = await res.json();
-      
-      if (data.success) {
-        alert('✅ 3D structure predicted! Opening viewer...');
-        const encodedPdb = encodeURIComponent(data.pdb);
-        window.open(`https://molstar.org/viewer/?pdb-data=${encodedPdb}`, '_blank');
-      } else {
-        alert('Error: ' + data.error);
-      }
-    } catch (e) {
-      alert('Error: ' + e.message);
-    }
-    
-    setStructureLoading(false);
-  };
-
-  const handleExport = async () => {
-    if (generatedSequences.length === 0) {
-      alert('Generate some sequences first!');
-      return;
-    }
-
-    try {
-      const res = await fetch('https://protogen-backend.onrender.com/export', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sequences: generatedSequences })
-      });
-      const data = await res.json();
-      
-      const blob = new Blob([data.fasta], { type: 'text/plain' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const body = await post("/export", { sequences });
+      const url = URL.createObjectURL(
+        new Blob([body.fasta], { type: "text/plain" }),
+      );
+      const a = document.createElement("a");
       a.href = url;
-      a.download = 'protogen_sequences.fasta';
+      a.download = "protogen.fasta";
       a.click();
+      URL.revokeObjectURL(url);
     } catch (e) {
-      alert('Export error: ' + e.message);
+      setError(e.message);
     }
-  };
-
-  const PropertySlider = ({ name, label, value, onChange }) => (
-    <div style={{ marginBottom: '20px' }}>
-      <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#555', fontSize: '14px' }}>
-        {label}: {value.toFixed(2)}
-      </label>
-      <input 
-        type="range" 
-        min="0" 
-        max="1" 
-        step="0.05"
-        value={value}
-        onChange={(e) => onChange(name, parseFloat(e.target.value))}
-        style={{ width: '100%', height: '6px', borderRadius: '5px', background: '#ddd', cursor: 'pointer', accentColor: '#667eea' }}
-      />
-    </div>
-  );
-
+  }
+  async function copy(sequence, index) {
+    try {
+      await navigator.clipboard.writeText(sequence);
+      setCopied(index);
+    } catch {
+      setError(
+        "Copy is unavailable in this browser. Use the FASTA download instead.",
+      );
+    }
+  }
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
-      <div style={{ background: 'rgba(0,0,0,0.2)', padding: '60px 20px', textAlign: 'center', color: 'white' }}>
-        <h1 style={{ fontSize: '48px', marginBottom: '10px', fontWeight: '700' }}>🧬 Protogen</h1>
-        <p style={{ fontSize: '18px', opacity: 0.9 }}>AI-Powered Protein Generator with 3D Structure Prediction</p>
-      </div>
-
-      <div style={{ maxWidth: '900px', margin: '40px auto', padding: '0 20px' }}>
-        <div style={{ background: 'white', borderRadius: '16px', padding: '40px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
-          
-          <h2 style={{ fontSize: '24px', marginBottom: '30px', color: '#333' }}>Protein Properties</h2>
-          
-          <PropertySlider name="thermostable" label="🔥 Thermostable" value={properties.thermostable} 
-            onChange={(name, val) => setProperties({...properties, [name]: val})} />
-          <PropertySlider name="enzyme" label="⚡ Enzyme-like" value={properties.enzyme}
-            onChange={(name, val) => setProperties({...properties, [name]: val})} />
-          <PropertySlider name="membrane" label="🧱 Membrane" value={properties.membrane}
-            onChange={(name, val) => setProperties({...properties, [name]: val})} />
-          <PropertySlider name="structural" label="🏗️ Structural" value={properties.structural}
-            onChange={(name, val) => setProperties({...properties, [name]: val})} />
-          <PropertySlider name="flexible" label="🌊 Flexible" value={properties.flexible}
-            onChange={(name, val) => setProperties({...properties, [name]: val})} />
-
-          <div style={{ borderTop: '2px solid #eee', paddingTop: '30px', marginTop: '30px' }}>
-            <h2 style={{ fontSize: '20px', marginBottom: '20px', color: '#333' }}>Generation Settings</h2>
-            
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#555' }}>
-                Number of Sequences: {numSequences}
-              </label>
-              <input type="range" min="1" max="10" value={numSequences}
-                onChange={(e) => setNumSequences(parseInt(e.target.value))}
-                style={{ width: '100%', height: '6px', borderRadius: '5px', background: '#ddd', cursor: 'pointer', accentColor: '#667eea' }} />
-            </div>
-
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#555' }}>
-                Length: {maxLength} AA
-              </label>
-              <input type="range" min="20" max="150" value={maxLength}
-                onChange={(e) => setMaxLength(parseInt(e.target.value))}
-                style={{ width: '100%', height: '6px', borderRadius: '5px', background: '#ddd', cursor: 'pointer', accentColor: '#764ba2' }} />
-              <small style={{ fontSize: '11px', color: '#999' }}>Keep under 150 for faster folding</small>
-            </div>
-
-            <div style={{ marginBottom: '30px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#555' }}>
-                Temperature: {temperature.toFixed(1)}
-              </label>
-              <input type="range" min="0.1" max="2.0" step="0.1" value={temperature}
-                onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                style={{ width: '100%', height: '6px', borderRadius: '5px', background: '#ddd', cursor: 'pointer', accentColor: '#764ba2' }} />
-            </div>
-
-            <button onClick={handleGenerate} disabled={loading}
-              style={{
-                width: '100%', padding: '16px', fontSize: '18px', fontWeight: '600',
-                background: loading ? '#ccc' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                color: 'white', border: 'none', borderRadius: '8px',
-                cursor: loading ? 'not-allowed' : 'pointer', transition: 'transform 0.2s',
-                marginBottom: '10px'
-              }}
-              onMouseEnter={(e) => !loading && (e.target.style.transform = 'scale(1.02)')}
-              onMouseLeave={(e) => !loading && (e.target.style.transform = 'scale(1)')}>
-              {loading ? '🔄 Generating...' : '⚡ Generate Proteins'}
-            </button>
-
-            {generatedSequences.length > 0 && (
-              <button onClick={handleExport}
-                style={{
-                  width: '100%', padding: '14px', fontSize: '16px', fontWeight: '600',
-                  background: '#28a745', color: 'white', border: 'none', borderRadius: '8px',
-                  cursor: 'pointer', transition: 'transform 0.2s'
-                }}
-                onMouseEnter={(e) => e.target.style.transform = 'scale(1.02)'}
-                onMouseLeave={(e) => e.target.style.transform = 'scale(1)'}>
-                💾 Export as FASTA
-              </button>
-            )}
+    <div className="proto-page">
+      <a className="skip-link" href="#studio">
+        Skip to sequence studio
+      </a>
+      <header className="proto-header">
+        <a className="proto-wordmark" href="#">
+          <PolymerMark />
+          protogen<span>/</span>
+        </a>
+        <div className="proto-nav">
+          <span>SEQUENCE STUDIO</span>
+          <a href={source} target="_blank" rel="noreferrer">
+            Explore the code <Icon />
+          </a>
+        </div>
+      </header>
+      <main>
+        <section className="proto-hero" aria-labelledby="proto-title">
+          <div>
+            <p className="eyebrow">
+              <span />
+              EXPLORATIONS IN PROTEIN SEQUENCES
+            </p>
+            <h1 id="proto-title">
+              Sequence,
+              <br />
+              <em>by design.</em>
+            </h1>
+            <p className="hero-description">
+              Shape the composition.
+              <br />
+              Explore what comes next.
+            </p>
           </div>
-
-          {generatedSequences.length > 0 && (
-            <div style={{ borderTop: '2px solid #eee', paddingTop: '40px', marginTop: '40px' }}>
-              <h3 style={{ fontSize: '20px', marginBottom: '20px', color: '#333' }}>
-                Generated Sequences ({generatedSequences.length})
-              </h3>
-              {generatedSequences.map((seq, i) => (
-                <div key={i} style={{
-                  background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)',
-                  padding: '20px', borderRadius: '8px', border: '1px solid #ddd',
-                  marginBottom: '15px'
-                }}>
-                  <div style={{ fontSize: '12px', fontWeight: '600', color: '#667eea', marginBottom: '10px' }}>
-                    SEQUENCE {i + 1}
-                  </div>
-                  <div style={{
-                    fontFamily: 'monospace', fontSize: '13px', lineHeight: '1.6',
-                    color: '#333', wordBreak: 'break-all',
-                    background: 'rgba(255,255,255,0.5)', padding: '12px',
-                    borderRadius: '4px', overflowX: 'auto', marginBottom: '12px'
-                  }}>
-                    {seq}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#666', marginBottom: '12px' }}>
-                    Length: <strong>{seq.length}</strong> amino acids
-                  </div>
-                  <button 
-                    onClick={() => handlePredictStructure(seq, i)}
-                    disabled={structureLoading && selectedSequence === i}
-                    style={{
-                      padding: '10px 16px', fontSize: '14px', fontWeight: '600',
-                      background: structureLoading && selectedSequence === i ? '#ccc' : '#ff6b6b',
-                      color: 'white', border: 'none', borderRadius: '6px',
-                      cursor: structureLoading && selectedSequence === i ? 'not-allowed' : 'pointer'
-                    }}>
-                    {structureLoading && selectedSequence === i ? '⏳ Predicting...' : '🔬 Predict 3D Structure'}
-                  </button>
+          <div className="hero-map">
+            <SequenceMap />
+            <div className="map-legend">
+              <span className="hydrophobic">Hydrophobic</span>
+              <span className="charged">Charged</span>
+              <span className="other">Other residues</span>
+            </div>
+          </div>
+        </section>
+        <div className="studio-heading">
+          <span>01 / GENERATION STUDIO</span>
+          <span>COMPOSITION → SEQUENCE → FASTA</span>
+        </div>
+        <section
+          className="proto-studio"
+          id="studio"
+          aria-label="Sequence generation studio"
+        >
+          <form className="control-panel" onSubmit={generate}>
+            <div className="panel-heading">
+              <h2>Set the balance.</h2>
+              <span>5 CONTROLS</span>
+            </div>
+            <p className="control-note">
+              These controls tune composition proxies, not experimentally
+              verified biological traits.
+            </p>
+            <fieldset disabled={loading} className="composition-controls">
+              <legend className="sr-only">Composition controls</legend>
+              {controls.map(([key, label, note], i) => (
+                <div className="property" key={key}>
+                  <label htmlFor={key}>
+                    <span className="property-index">0{i + 1}</span>
+                    <span>
+                      {label}
+                      <small>{note}</small>
+                    </span>
+                    <output htmlFor={key}>{properties[key].toFixed(2)}</output>
+                  </label>
+                  <input
+                    id={key}
+                    aria-label={label}
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={properties[key]}
+                    style={{ "--fill": `${properties[key] * 100}%` }}
+                    onChange={(e) =>
+                      setProperties({
+                        ...properties,
+                        [key]: Number(e.target.value),
+                      })
+                    }
+                  />
                 </div>
               ))}
+            </fieldset>
+            <fieldset disabled={loading} className="sampling">
+              <legend>SAMPLING SETTINGS</legend>
+              <div className="sampling-grid">
+                <label htmlFor="length">
+                  Token limit
+                  <input
+                    id="length"
+                    type="number"
+                    min="2"
+                    max="150"
+                    required
+                    value={maxLength}
+                    onChange={(e) =>
+                      setMaxLength(
+                        e.target.value === "" ? "" : Number(e.target.value),
+                      )
+                    }
+                  />
+                </label>
+                <label htmlFor="temperature">
+                  Temperature
+                  <input
+                    id="temperature"
+                    type="number"
+                    min="0.1"
+                    max="2"
+                    step="0.1"
+                    required
+                    value={temperature}
+                    onChange={(e) =>
+                      setTemperature(
+                        e.target.value === "" ? "" : Number(e.target.value),
+                      )
+                    }
+                  />
+                </label>
+                <label htmlFor="count">
+                  Sequences
+                  <input
+                    id="count"
+                    type="number"
+                    min="1"
+                    max="10"
+                    required
+                    value={numSequences}
+                    onChange={(e) =>
+                      setNumSequences(
+                        e.target.value === "" ? "" : Number(e.target.value),
+                      )
+                    }
+                  />
+                </label>
+              </div>
+              <p>
+                Token limit includes start/end. Sequences may finish earlier.
+              </p>
+            </fieldset>
+            <button
+              className="generate-button"
+              type="submit"
+              disabled={loading}
+            >
+              {loading ? "Generating…" : "Generate sequences"}
+              <Icon />
+            </button>
+            {error && (
+              <p className="error-message" role="alert">
+                {error}
+              </p>
+            )}
+          </form>
+          <div
+            className="sequence-panel"
+            aria-live="polite"
+            aria-busy={loading}
+          >
+            <div className="sequence-toolbar">
+              <span>
+                OUTPUT /{" "}
+                {sequences.length
+                  ? `BATCH ${String(batchNumber).padStart(2, "0")}`
+                  : "NO BATCH YET"}
+              </span>
+              {sequences.length > 0 && (
+                <button
+                  className="export-button"
+                  onClick={exportFasta}
+                  disabled={loading}
+                >
+                  Download FASTA <Icon download />
+                </button>
+              )}
             </div>
-          )}
-        </div>
-      </div>
-
-      <div style={{ background: 'rgba(0,0,0,0.2)', color: 'white', textAlign: 'center', padding: '30px 20px', marginTop: '60px' }}>
-        <p style={{ fontSize: '14px', opacity: 0.8 }}>Protogen v3.0 • 3D Structure • ESMFold • Mol* Viewer</p>
-      </div>
+            {sequences.length ? (
+              <div className="sequence-list">
+                {sequences.map((sequence, i) => (
+                  <article className="sequence" key={i}>
+                    <header>
+                      <h3>
+                        <span>0{i + 1}</span>Sequence {i + 1}
+                      </h3>
+                      <div>
+                        <span>{sequence.length} residues</span>
+                        <button
+                          aria-label={`Copy sequence ${i + 1}`}
+                          onClick={() => copy(sequence, i)}
+                        >
+                          <Icon copy />
+                        </button>
+                      </div>
+                    </header>
+                    <div className="residue-string" aria-label={sequence}>
+                      {sequence.split("").map((aa, j) => (
+                        <span
+                          className={category(aa)}
+                          key={j}
+                          title={`Residue ${j + 1}: ${aa}`}
+                        >
+                          {aa}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="sequence-caption">
+                      <span>
+                        {copied === i
+                          ? "COPIED TO CLIPBOARD"
+                          : "MODEL-GENERATED / FUNCTION UNVALIDATED"}
+                      </span>
+                      <span>
+                        N <i>—</i> C
+                      </span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className={`sequence-empty ${loading ? "working" : ""}`}>
+                <div className="empty-graphic" aria-hidden="true">
+                  {["A", "R", "N", "D", "C", "Q", "E", "G"].map((aa, i) => (
+                    <span key={aa} style={{ "--index": i }}>
+                      {aa}
+                    </span>
+                  ))}
+                </div>
+                <p className="empty-index">YOUR NEXT EXPLORATION</p>
+                <h2>
+                  {loading ? (
+                    <>
+                      Finding the
+                      <br />
+                      next sequence.
+                    </>
+                  ) : (
+                    <>
+                      A blank canvas.
+                      <br />A new sequence.
+                    </>
+                  )}
+                </h2>
+                <p>
+                  Adjust the five composition controls and generate a batch.
+                  Your sequences will appear here, ready to inspect and export.
+                </p>
+                <div className="empty-bottom">
+                  <span>20 BUILDING BLOCKS</span>
+                  <span>
+                    ONE STARTING POINT <Icon />
+                  </span>
+                </div>
+              </div>
+            )}
+            {sequences.length > 0 && (
+              <div className="sequence-footnote">
+                <p>
+                  Sequences are generated by a small research model. Composition
+                  adherence and biological function remain unvalidated.
+                </p>
+                <button
+                  onClick={() => {
+                    setSequences([]);
+                    setCopied(null);
+                  }}
+                  disabled={loading}
+                >
+                  Clear batch
+                </button>
+              </div>
+            )}
+          </div>
+        </section>
+        <section className="proto-method">
+          <p className="eyebrow">THE EXPERIMENT</p>
+          <div>
+            <h2>
+              A small model.
+              <br />
+              An open process.
+            </h2>
+            <p>
+              This studio explores a causal sequence model trained on a small,
+              deduplicated dataset. The full training protocol, evaluation, and
+              limitations are documented alongside the code.
+            </p>
+            <a href={source} target="_blank" rel="noreferrer">
+              Read the experiment <Icon />
+            </a>
+          </div>
+        </section>
+      </main>
+      <footer>
+        <span>PROTOGEN / SEQUENCE EXPERIMENTS</span>
+        <span>DESIGNED & BUILT BY EDISON ESSIEN</span>
+      </footer>
     </div>
   );
 }
-
-export default App;
