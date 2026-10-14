@@ -1,167 +1,68 @@
-# 🧬 Protogen - AI-Powered Protein Sequence Generator
+# Protogen
 
-An end-to-end machine learning application that generates novel protein sequences with specific biochemical properties using a Transformer-based neural network.
+A small PyTorch amino-acid sequence modeling project with a FastAPI generation API, React interface and FASTA export. The model accepts five **heuristic composition proxy scores**. These are not experimentally measured thermostability, catalytic activity or other biological properties.
 
-![Protogen Demo](https://img.shields.io/badge/Status-Live-success) ![Python](https://img.shields.io/badge/Python-3.11-blue) ![PyTorch](https://img.shields.io/badge/PyTorch-2.6-orange)
+## October 2026 repair
 
-## 🌟 Features
+The original training objective lacked a causal attention mask, and the larger dataset had 425 rows containing only 85 unique sequences. The refreshed pipeline:
 
-- **Property-Conditioned Generation**: Generate proteins with specific traits (thermostability, enzyme activity, membrane association, etc.)
-- **Real-Time Prediction**: Interactive web interface for instant protein generation
-- **Batch Generation**: Create multiple sequences simultaneously
-- **FASTA Export**: Download sequences in standard bioinformatics format
-- **3D Structure Prediction**: Integration with ESMFold API for structure visualization
-- **Large-Scale Training**: Trained on 425+ real protein sequences from UniProt
+- Deduplicates exact sequence strings **before** a seeded train/validation/test split.
+- Always blocks future tokens and padded keys in attention.
+- Retains START/END tokens when truncating and uses one training entry point.
+- Records token-weighted held-out NLL/perplexity and a training-only unigram baseline.
+- Saves a checksum-verified model/config/tokenizer/split/report bundle.
+- Bounds generation inputs; fails closed without the new bundle; uses root-independent paths.
 
-## 🏗️ Architecture
+Historical checkpoints remain in Git history/current model files for comparison, but the API does not silently load them. Old conditioning/throughput percentages and the old noncausal validation loss are not valid new evaluation results.
 
-### Model
-- **Type**: Conditional Transformer
-- **Parameters**: 3.17 million
-- **Architecture**: 4 layers, 256 hidden dimensions, 8 attention heads
-- **Training**: 10 epochs on curated UniProt dataset
-- **Properties**: 5-dimensional conditioning (thermostable, enzyme, membrane, structural, flexible)
+## Reproduce the small CPU experiment
 
-### Tech Stack
-**Backend:**
-- FastAPI (REST API)
-- PyTorch (Deep Learning)
-- Keras (Model training)
+Python 3.12, from the repository root:
 
-**Frontend:**
-- React
-- Vite
-- Pure CSS (no frameworks)
-
-**Data:**
-- UniProt API (protein sequences)
-- Custom tokenizer for amino acid encoding
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Python 3.11+
-- Node.js 18+
-- 4GB+ RAM
-
-### Installation
-
-1. **Clone the repository**
-```bash
-git clone https://github.com/edisonlovescodes/protogen.git
-cd protogen
-
-Set up backend
-
-bashpython3 -m venv venv
-source venv/bin/activate
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+python -m models.train_reproducible --epochs 3 --max-length 64
+```
 
-Set up frontend
+This uses the existing raw dataset and writes `runs/latest/{model.pt,tokenizer.json,report.json}`. No data download, GPU or cloud service is required. The small experiment checks the repaired pipeline; its output is not proof of functional proteins. Raw-sequence checksums and split IDs are recorded. Exact deduplication does **not** establish a homology-disjoint split; related sequences can remain across partitions. Conditioning adherence needs a separate paired-seed/control experiment.
 
-bashcd frontend
-npm install
+The default run retains at most 62 amino acids plus START/END for training. The positional buffer supports 512 tokens, but API generation is capped at 150 tokens, temperature (0,2], and 1–10 sequences. Longer generation than the training window is exploratory.
 
-Run the application
+## Run the app
 
-Terminal 1 (Backend):
-bashcd protogen
-python backend/api.py
-Terminal 2 (Frontend):
-bashcd protogen/frontend
+```sh
+uvicorn backend.api:app --host 127.0.0.1 --port 8000
+```
+
+In another terminal:
+
+```sh
+cd frontend
+npm ci --ignore-scripts
 npm run dev
+```
 
-Open browser
+Open http://localhost:5173. Vite routes `/api` to the local backend; `VITE_API_BASE_URL` can override the URL at build time. API documentation: http://127.0.0.1:8000/docs. `PROTOGEN_MODEL_DIR` selects a different compatible bundle. `CORS_ORIGINS` configures explicit separate-host origins.
 
-http://localhost:3000
-📊 Model Training
-The model was trained through several phases:
+External folding and the old unverified viewer link have been removed from the interface; the old route returns 503. No external service is contacted during startup, tests or generation.
 
-Data Collection: Downloaded 425 protein sequences from UniProt
-Preprocessing: Tokenized sequences and computed biochemical properties
-Training: 10 epochs with Adam optimizer, learning rate 5e-4
-Validation: 85/15 train/val split, achieving loss of 2.81
+## Tests
 
-🎯 API Endpoints
+```sh
+pip install -r requirements-dev.txt
+python -m pytest tests -q
+cd frontend
+npm run build
+```
 
-POST /generate - Generate protein sequences
-POST /export - Export as FASTA format
-POST /predict_structure - Predict 3D structure (ESMFold)
-GET /properties - List available properties
-GET /health - Health check
+Tests cover causal-prefix invariance, padding, deduplication, truncation/EOS, a tiny train/save/load workflow, input rejection, checksum checks, missing-model behavior and FASTA validation. CI runs the regression suite and frontend build. Old `models/train*.py` entry points forward to the same reproducible protocol.
 
-📁 Project Structure
-protogen/
-├── backend/
-│   └── api.py
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx
-│   │   └── main.jsx
-│   └── package.json
-├── models/
-│   ├── transformer.py
-│   ├── conditional_transformer.py
-│   ├── train_improved.py
-│   └── best_model.pt
-├── data/
-│   ├── scripts/
-│   └── processed/
-└── requirements.txt
-🧪 Example Usage
-Generate a thermostable protein:
-pythonimport requests
+See [CLAIMS.md](CLAIMS.md) and [CHANGELOG.md](CHANGELOG.md). Generated dependencies, bytecode, build output and local runs are ignored; package locks remain tracked.
 
-response = requests.post('http://localhost:8000/generate', json={
-    'max_length': 100,
-    'temperature': 1.0,
-    'num_sequences': 1,
-    'properties': {
-        'thermostable': 0.9,
-        'enzyme': 0.2,
-        'membrane': 0.1,
-        'structural': 0.5,
-        'flexible': 0.3
-    }
-})
+## Interface and type
 
-print(response.json()['sequences'])
-📈 Results
+The interface uses self-hosted typefaces distributed by [Google Fonts](https://github.com/google/fonts). Original SIL Open Font License files are included in `frontend/public/fonts/`. No hosted font request is needed to render the page.
 
-Successfully generates diverse protein sequences
-Property conditioning demonstrably affects amino acid composition
-Model converges with loss < 3.0
-Generated sequences pass basic biochemical validation
-
-## 📈 Future Enhancements
-- [ ] Multi-protein complex generation
-- [ ] Integration with AlphaFold 3 for improved folding
-- [ ] Sequence alignment and homology analysis
-- [ ] Fine-tuning on specific protein families (enzymes, antibodies)
-- [ ] Protein function prediction from sequence
-- [ ] Advanced property conditioning (pH stability, solubility)
-- [ ] User authentication & project management
-- [ ] PostgreSQL for production database
-- [ ] Real-time collaboration features
-- [ ] Export to multiple formats (PDB, mmCIF, FASTA)
-
-## 👨‍💻 Author
-
-**Edison Essien**
-- Portfolio: [edisoncodes.ai](https://edisoncodes.ai)
-- LinkedIn: [@essienedison](https://linkedin.com/in/essienedison)
-- GitHub: [edisonlovescodes](https://github.com/edisonlovescodes)
-- Email: organicedison@gmail.com
-
-## 🙏 Acknowledgments
-
-- **UniProt Database**: The Universal Protein Resource
-- **ESMFold**: Meta AI - Evolutionary Scale Modeling
-- **PyTorch**: Facebook AI Research
-- **FastAPI**: Sebastián Ramírez
-- **React**: Facebook/Meta
-- **Transformers Architecture**: Vaswani et al.
-
----
-
-Built with ❤️ and lots of ☕
+Frontend regression tests: `cd frontend` then `npm test`. `PROTOGEN_API_PROXY` can configure the Vite development proxy target for parallel local previews.
