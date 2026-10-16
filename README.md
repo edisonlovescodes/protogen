@@ -1,5 +1,7 @@
 # Protogen
 
+[Project overview and screenshots](https://byedison.com/projects/protogen/) · [Edison’s portfolio](https://byedison.com/)
+
 A small PyTorch amino-acid sequence modeling project with a FastAPI generation API, React interface and FASTA export. The model accepts five **heuristic composition proxy scores**. These are not experimentally measured thermostability, catalytic activity or other biological properties.
 
 ## October 2026 repair
