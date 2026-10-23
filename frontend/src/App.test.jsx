@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import App from "./App.jsx";
+import App from "./App.tsx";
 
 beforeEach(() => {
   global.fetch = vi.fn(() =>
@@ -88,4 +88,53 @@ test("shows a missing-model error and allows retry", async () => {
   expect(
     screen.getByRole("button", { name: "Generate sequences", exact: true }),
   ).toBeEnabled();
+});
+
+test("locks the batch during a pending copy and restores it when the copy completes", async () => {
+  let finish;
+  navigator.clipboard.writeText.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(<App />);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Generate sequences", exact: true }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Copy sequence 1", exact: true }),
+  );
+  expect(
+    screen.getByRole("button", { name: "Clear batch", exact: true }),
+  ).toBeDisabled();
+  expect(
+    screen.getByRole("button", { name: "Generate sequences", exact: true }),
+  ).toBeDisabled();
+  finish();
+  expect(await screen.findByText("COPIED TO CLIPBOARD")).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "Clear batch", exact: true }),
+  ).toBeEnabled();
+});
+
+test("preserves the generated batch when exporting fails", async () => {
+  render(<App />);
+  fireEvent.click(
+    screen.getByRole("button", { name: "Generate sequences", exact: true }),
+  );
+  const download = await screen.findByRole("button", {
+    name: "Download FASTA",
+    exact: true,
+  });
+  fetch.mockResolvedValueOnce({
+    ok: false,
+    json: async () => ({ detail: "Export unavailable" }),
+  });
+  fireEvent.click(download);
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Export unavailable",
+  );
+  expect(screen.getByLabelText("ARND")).toBeInTheDocument();
+  expect(download).toBeEnabled();
 });

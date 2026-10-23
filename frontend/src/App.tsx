@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import type { CSSProperties, FormEvent } from "react";
 import "./App.css";
 
 const API = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
@@ -11,25 +12,36 @@ const controls = [
   ["flexible", "Polar fraction", "Residue enrichment"],
 ];
 const alphabet = "ARNDCQEGHILKMFPSTWYV";
-const category = (residue) =>
+const category = (residue: string) =>
   "AILMFVP".includes(residue)
     ? "hydrophobic"
     : "DEKR".includes(residue)
       ? "charged"
       : "other";
 
-function Icon({ copy = false, download = false }) {
+type Notice =
+  | { kind: "idle" }
+  | { kind: "copying"; index: number }
+  | { kind: "copied"; index: number }
+  | { kind: "exporting" }
+  | { kind: "failed"; message: string };
+type Studio =
+  | { kind: "empty" }
+  | { kind: "generating" }
+  | { kind: "failed"; message: string }
+  | { kind: "ready"; sequences: string[]; notice: Notice };
+const icons = {
+  arrow: "M4 12h15m-6-6 6 6-6 6",
+  copy: "M8 8h12v12H8zM4 16V4h12",
+  download: "M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4",
+};
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+function Icon({ kind }: { kind: keyof typeof icons }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d={
-          copy
-            ? "M8 8h12v12H8zM4 16V4h12"
-            : download
-              ? "M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4"
-              : "M4 12h15m-6-6 6 6-6 6"
-        }
-      />
+      <path d={icons[kind]} />
     </svg>
   );
 }
@@ -77,80 +89,128 @@ function SequenceMap() {
     </svg>
   );
 }
-async function post(path, payload) {
+async function post(path: string, payload: object) {
   const response = await fetch(`${API}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   const body = await response.json();
-  if (!response.ok)
+  if (!response.ok) {
+    assert(
+      typeof body.detail === "string" || Array.isArray(body.detail),
+      "Invalid API error response",
+    );
     throw new Error(
       typeof body.detail === "string"
         ? body.detail
-        : "Check the generation settings and try again.",
+        : body.detail.map((item: { msg: string }) => item.msg).join("; "),
     );
+  }
   return body;
 }
 
 export default function App() {
   const [properties, setProperties] = useState(
-    Object.fromEntries(controls.map(([key]) => [key, 0.5])),
+    Object.fromEntries(controls.map(([key]) => [key, 0.5])) as Record<
+      string,
+      number
+    >,
   );
-  const [maxLength, setMaxLength] = useState(100);
-  const [temperature, setTemperature] = useState(1);
-  const [numSequences, setNumSequences] = useState(1);
-  const [sequences, setSequences] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [copied, setCopied] = useState(null);
-  const [batchNumber, setBatchNumber] = useState(0);
-  async function generate(event) {
+  const [studio, setStudio] = useState<Studio>({ kind: "empty" });
+  const batchNumber = useRef(0);
+  const sequences = studio.kind === "ready" ? studio.sequences : [];
+  const notice =
+    studio.kind === "ready" ? studio.notice : { kind: "idle" as const };
+  const loading =
+    studio.kind === "generating" ||
+    notice.kind === "copying" ||
+    notice.kind === "exporting";
+  const error =
+    studio.kind === "failed"
+      ? studio.message
+      : notice.kind === "failed"
+        ? notice.message
+        : null;
+  const copied = notice.kind === "copied" ? notice.index : null;
+
+  async function generate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError("");
-    setLoading(true);
+    const settings = Object.fromEntries(new FormData(event.currentTarget));
+    assert(
+      ["max_length", "temperature", "num_sequences"].every(
+        (key) => typeof settings[key] === "string",
+      ),
+      "Expected sampling settings",
+    );
+    setStudio({ kind: "generating" });
     try {
       const body = await post("/generate", {
         properties,
-        max_length: maxLength,
-        temperature,
-        num_sequences: numSequences,
+        max_length: Number(settings.max_length),
+        temperature: Number(settings.temperature),
+        num_sequences: Number(settings.num_sequences),
       });
-      setSequences(body.sequences);
-      setCopied(null);
-      setBatchNumber((n) => n + 1);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
+      assert(
+        Array.isArray(body.sequences) &&
+          body.sequences.every(
+            (seq: unknown) =>
+              typeof seq === "string" && /^[ARNDCQEGHILKMFPSTWYV]+$/.test(seq),
+          ),
+        "Invalid generated sequences",
+      );
+      batchNumber.current += 1;
+      setStudio({
+        kind: "ready",
+        sequences: body.sequences,
+        notice: { kind: "idle" },
+      });
+    } catch (error) {
+      assert(error instanceof Error, "Expected a generation error");
+      setStudio({ kind: "failed", message: error.message });
     }
   }
   async function exportFasta() {
-    setError("");
+    assert(studio.kind === "ready", "Generate a batch before exporting");
+    setStudio({ ...studio, notice: { kind: "exporting" } });
     try {
       const body = await post("/export", { sequences });
+      assert(typeof body.fasta === "string", "Invalid FASTA response");
       const url = URL.createObjectURL(
         new Blob([body.fasta], { type: "text/plain" }),
       );
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "protogen.fasta";
-      a.click();
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "protogen.fasta";
+      link.click();
       URL.revokeObjectURL(url);
-    } catch (e) {
-      setError(e.message);
+      setStudio({ ...studio, notice: { kind: "idle" } });
+    } catch (error) {
+      assert(error instanceof Error, "Expected an export error");
+      setStudio({
+        ...studio,
+        notice: { kind: "failed", message: error.message },
+      });
     }
   }
-  async function copy(sequence, index) {
+  async function copy(index: number) {
+    assert(studio.kind === "ready", "Generate a batch before copying");
+    setStudio({ ...studio, notice: { kind: "copying", index } });
     try {
-      await navigator.clipboard.writeText(sequence);
-      setCopied(index);
+      await navigator.clipboard.writeText(studio.sequences[index]);
+      setStudio({ ...studio, notice: { kind: "copied", index } });
     } catch {
-      setError(
-        "Copy is unavailable in this browser. Use the FASTA download instead.",
-      );
+      setStudio({
+        ...studio,
+        notice: {
+          kind: "failed",
+          message:
+            "Copy is unavailable in this browser. Use the FASTA download instead.",
+        },
+      });
     }
   }
+
   return (
     <div className="proto-page">
       <a className="skip-link" href="#studio">
@@ -164,7 +224,7 @@ export default function App() {
         <div className="proto-nav">
           <span>SEQUENCE STUDIO</span>
           <a href={source} target="_blank" rel="noreferrer">
-            Explore the code <Icon />
+            Explore the code <Icon kind="arrow" />
           </a>
         </div>
       </header>
@@ -233,7 +293,9 @@ export default function App() {
                     max="1"
                     step="0.05"
                     value={properties[key]}
-                    style={{ "--fill": `${properties[key] * 100}%` }}
+                    style={
+                      { "--fill": `${properties[key] * 100}%` } as CSSProperties
+                    }
                     onChange={(e) =>
                       setProperties({
                         ...properties,
@@ -255,12 +317,8 @@ export default function App() {
                     min="2"
                     max="150"
                     required
-                    value={maxLength}
-                    onChange={(e) =>
-                      setMaxLength(
-                        e.target.value === "" ? "" : Number(e.target.value),
-                      )
-                    }
+                    name="max_length"
+                    defaultValue={100}
                   />
                 </label>
                 <label htmlFor="temperature">
@@ -272,12 +330,8 @@ export default function App() {
                     max="2"
                     step="0.1"
                     required
-                    value={temperature}
-                    onChange={(e) =>
-                      setTemperature(
-                        e.target.value === "" ? "" : Number(e.target.value),
-                      )
-                    }
+                    name="temperature"
+                    defaultValue={1}
                   />
                 </label>
                 <label htmlFor="count">
@@ -288,12 +342,8 @@ export default function App() {
                     min="1"
                     max="10"
                     required
-                    value={numSequences}
-                    onChange={(e) =>
-                      setNumSequences(
-                        e.target.value === "" ? "" : Number(e.target.value),
-                      )
-                    }
+                    name="num_sequences"
+                    defaultValue={1}
                   />
                 </label>
               </div>
@@ -306,8 +356,8 @@ export default function App() {
               type="submit"
               disabled={loading}
             >
-              {loading ? "Generating…" : "Generate sequences"}
-              <Icon />
+              {studio.kind === "generating" ? "Generating…" : "Generate sequences"}
+              <Icon kind="arrow" />
             </button>
             {error && (
               <p className="error-message" role="alert">
@@ -324,7 +374,7 @@ export default function App() {
               <span>
                 OUTPUT /{" "}
                 {sequences.length
-                  ? `BATCH ${String(batchNumber).padStart(2, "0")}`
+                  ? `BATCH ${String(batchNumber.current).padStart(2, "0")}`
                   : "NO BATCH YET"}
               </span>
               {sequences.length > 0 && (
@@ -333,7 +383,7 @@ export default function App() {
                   onClick={exportFasta}
                   disabled={loading}
                 >
-                  Download FASTA <Icon download />
+                  Download FASTA <Icon kind="download" />
                 </button>
               )}
             </div>
@@ -349,9 +399,10 @@ export default function App() {
                         <span>{sequence.length} residues</span>
                         <button
                           aria-label={`Copy sequence ${i + 1}`}
-                          onClick={() => copy(sequence, i)}
+                          onClick={() => copy(i)}
+                          disabled={loading}
                         >
-                          <Icon copy />
+                          <Icon kind="copy" />
                         </button>
                       </div>
                     </header>
@@ -383,7 +434,7 @@ export default function App() {
               <div className={`sequence-empty ${loading ? "working" : ""}`}>
                 <div className="empty-graphic" aria-hidden="true">
                   {["A", "R", "N", "D", "C", "Q", "E", "G"].map((aa, i) => (
-                    <span key={aa} style={{ "--index": i }}>
+                    <span key={aa} style={{ "--index": i } as CSSProperties}>
                       {aa}
                     </span>
                   ))}
@@ -410,7 +461,7 @@ export default function App() {
                 <div className="empty-bottom">
                   <span>20 BUILDING BLOCKS</span>
                   <span>
-                    ONE STARTING POINT <Icon />
+                    ONE STARTING POINT <Icon kind="arrow" />
                   </span>
                 </div>
               </div>
@@ -422,10 +473,7 @@ export default function App() {
                   adherence and biological function remain unvalidated.
                 </p>
                 <button
-                  onClick={() => {
-                    setSequences([]);
-                    setCopied(null);
-                  }}
+                  onClick={() => setStudio({ kind: "empty" })}
                   disabled={loading}
                 >
                   Clear batch
@@ -448,7 +496,7 @@ export default function App() {
               limitations are documented alongside the code.
             </p>
             <a href={source} target="_blank" rel="noreferrer">
-              Read the experiment <Icon />
+              Read the experiment <Icon kind="arrow" />
             </a>
           </div>
         </section>

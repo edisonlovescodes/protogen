@@ -94,7 +94,7 @@ def test_bundle_generation_and_export(client):
 
 
 def test_missing_bundle_and_disabled_folding(tmp_path):
-    with TestClient(create_app(tmp_path)) as c:
+    with TestClient(create_app(tmp_path / "missing")) as c:
         assert c.get("/health").status_code == 503
         assert c.post("/generate", json={}).status_code == 503
         assert c.post("/predict_structure", json={"sequence": "ARND"}).status_code == 503
@@ -106,8 +106,9 @@ def test_changed_artifact_fails_closed(bundle, tmp_path):
     shutil.copytree(bundle, tmp_path / "bundle")
     with (tmp_path / "bundle/model.pt").open("ab") as f:
         f.write(b"changed")
-    with TestClient(create_app(tmp_path / "bundle")) as c:
-        assert c.get("/health").status_code == 503
+    with pytest.raises(AssertionError, match="checksum"):
+        with TestClient(create_app(tmp_path / "bundle")):
+            pass
 
 
 def test_truncation_collision_is_rejected(tmp_path):
@@ -115,3 +116,16 @@ def test_truncation_collision_is_rejected(tmp_path):
     path.write_text(json.dumps({"sequences": ["A" * 20 + "C" * i for i in range(1, 21)]}))
     with pytest.raises(ValueError, match="cross-split duplicates"):
         run(path, tmp_path / "bundle", epochs=1, max_length=8)
+
+
+def test_incompatible_tokenizer_fails_at_load(bundle, tmp_path):
+    import shutil
+
+    shutil.copytree(bundle, tmp_path / "bundle")
+    path = tmp_path / "bundle/tokenizer.json"
+    config = json.loads(path.read_text())
+    config["vocab_size"] += 1
+    path.write_text(json.dumps(config))
+    with pytest.raises(AssertionError, match="vocabulary size"):
+        with TestClient(create_app(tmp_path / "bundle")):
+            pass

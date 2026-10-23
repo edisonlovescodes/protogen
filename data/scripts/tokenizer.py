@@ -86,9 +86,10 @@ class AminoAcidTokenizer:
         tokenizer = cls()
         with open(path, "r") as f:
             config = json.load(f)
-        tokenizer.aa_to_token = config["aa_to_token"]
-        tokenizer.token_to_aa = {int(v): k for k, v in tokenizer.aa_to_token.items()}
-        tokenizer.vocab_size = config["vocab_size"]
+        assert config["aa_to_token"] == tokenizer.aa_to_token, "Tokenizer alphabet is incompatible"
+        assert (
+            config["vocab_size"] == tokenizer.vocab_size
+        ), "Tokenizer vocabulary size is incompatible"
         return tokenizer
 
     def pad_sequence(self, tokens: List[int], max_length: int) -> List[int]:

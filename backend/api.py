@@ -1,9 +1,9 @@
 """Bounded generation from a versioned causal experiment bundle."""
 
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 import hashlib
 import json
-import logging
 import os
 from pathlib import Path
 from threading import Lock
@@ -18,7 +18,6 @@ from data.scripts.tokenizer import AminoAcidTokenizer
 
 ROOT = Path(__file__).resolve().parents[1]
 KEYS = ["thermostable", "enzyme", "membrane", "structural", "flexible"]
-LOGGER = logging.getLogger(__name__)
 Score = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 
 
@@ -46,39 +45,34 @@ class ExportRequest(BaseModel):
     sequences: list[Sequence] = Field(min_length=1, max_length=10)
 
 
-def create_app(bundle_path=None):
-    bundle = Path(bundle_path or os.getenv("PROTOGEN_MODEL_DIR", ROOT / "runs/latest")).resolve()
+@dataclass(frozen=True)
+class LoadedBundle:
+    model: ConditionalProteinTransformer
+    tokenizer: AminoAcidTokenizer
+    report: dict
+
+
+def create_app(bundle: Path):
     lock = Lock()
 
     @asynccontextmanager
     async def lifespan(app):
-        app.state.model = None
-        app.state.report = None
-        app.state.tokenizer = None
-        try:
+        app.state.bundle = None
+        if bundle.exists():
             report = json.loads((bundle / "report.json").read_text())
-            if report["protocol"] != "causal-exact-dedup-v1":
-                raise ValueError(
-                    "Unsupported model protocol; historical checkpoints need retraining"
-                )
+            assert report["protocol"] == "causal-exact-dedup-v1", "Unsupported model protocol"
             digest = hashlib.sha256((bundle / "model.pt").read_bytes()).hexdigest()
-            if digest != report["model_sha256"]:
-                raise ValueError("Artifact checksum mismatch")
+            assert digest == report["model_sha256"], "Artifact checksum mismatch"
             tokenizer = AminoAcidTokenizer.load(bundle / "tokenizer.json")
-            if tokenizer.aa_to_token != AminoAcidTokenizer().aa_to_token:
-                raise ValueError("Tokenizer does not match this model contract")
             model = ConditionalProteinTransformer(**report["model_config"])
             model.load_state_dict(
-                torch.load(bundle / "model.pt", map_location="cpu", weights_only=True), strict=True
+                torch.load(bundle / "model.pt", map_location="cpu", weights_only=True)
             )
-            model.eval()
-            app.state.model = model
-            app.state.tokenizer = tokenizer
-            app.state.report = report
-        except Exception:
-            LOGGER.exception("No usable causal bundle; generation will return 503")
-        yield
-        app.state.model = None
+            app.state.bundle = LoadedBundle(model.eval(), tokenizer, report)
+        try:
+            yield
+        finally:
+            app.state.bundle = None
 
     app = FastAPI(title="Protogen API", version="3.1.0", lifespan=lifespan)
     app.add_middleware(
@@ -102,48 +96,44 @@ def create_app(bundle_path=None):
 
     @app.get("/health")
     def health():
-        ready = app.state.model is not None
+        loaded = app.state.bundle
+        ready = loaded is not None
         return JSONResponse(
             status_code=200 if ready else 503,
             content={
                 "status": "ready" if ready else "model_unavailable",
                 "model_loaded": ready,
-                "protocol": app.state.report["protocol"] if ready else None,
-                "model_sha256": app.state.report["model_sha256"] if ready else None,
+                "protocol": loaded.report["protocol"] if ready else None,
+                "model_sha256": loaded.report["model_sha256"] if ready else None,
             },
         )
 
     @app.post("/generate")
     def generate(request: GenerateRequest):
-        if app.state.model is None:
+        loaded = app.state.bundle
+        if loaded is None:
             raise HTTPException(
-                503, "Run the documented local experiment to create a causal model bundle"
+                503,
+                "Run the documented local experiment to create a causal model bundle",
             )
-        if request.max_length > app.state.model.pos_encoding.pe.shape[1]:
+        if request.max_length > loaded.model.pos_encoding.pe.shape[1]:
             raise HTTPException(422, "Length exceeds model capacity")
         props = request.properties.model_dump()
         sequences = []
         tokens = []
-        try:
-            with lock:
-                for _ in range(request.num_sequences):
-                    generated = app.state.model.generate_with_properties(
-                        [props[k] for k in KEYS],
-                        max_length=request.max_length,
-                        temperature=request.temperature,
-                        device="cpu",
-                    )
-                    sequences.append(app.state.tokenizer.decode(generated))
-                    tokens.append(generated)
-        except Exception:
-            LOGGER.exception("Generation failed")
-            raise HTTPException(500, "Sequence generation failed") from None
+        with lock:
+            for _ in range(request.num_sequences):
+                generated = loaded.model.generate_with_properties(
+                    [props[k] for k in KEYS], request.max_length, request.temperature
+                )
+                sequences.append(loaded.tokenizer.decode(generated))
+                tokens.append(generated)
         return {
             "sequences": sequences,
             "tokens": tokens,
             "properties": props,
-            "protocol": app.state.report["protocol"],
-            "model_sha256": app.state.report["model_sha256"],
+            "protocol": loaded.report["protocol"],
+            "model_sha256": loaded.report["model_sha256"],
             "note": "Composition proxy controls; biological function and conditioning efficacy are unvalidated",
         }
 
@@ -171,4 +161,4 @@ def create_app(bundle_path=None):
     return app
 
 
-app = create_app()
+app = create_app(Path(os.getenv("PROTOGEN_MODEL_DIR", ROOT / "runs/latest")))

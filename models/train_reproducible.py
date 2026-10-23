@@ -56,7 +56,10 @@ def evaluate(model, loader, baseline_log_probs):
             valid = targets.ne(20)
             logits = model(tokens[:, :-1], properties=props)
             loss_sum += torch.nn.functional.cross_entropy(
-                logits.reshape(-1, 24), targets.reshape(-1), ignore_index=20, reduction="sum"
+                logits.reshape(-1, 24),
+                targets.reshape(-1),
+                ignore_index=20,
+                reduction="sum",
             ).item()
             baseline_sum += -baseline_log_probs[targets[valid]].sum().item()
             count += valid.sum().item()
@@ -77,8 +80,7 @@ def run(data_path, output, epochs=3, seed=42, max_length=64):
     torch.use_deterministic_algorithms(True)
     path = Path(data_path)
     raw = json.loads(path.read_text())["sequences"]
-    if not all(isinstance(s, str) for s in raw):
-        raise ValueError("Use raw sequence strings")
+    assert all(isinstance(s, str) for s in raw), "Use raw sequence strings"
     splits = split_sequences(raw, seed)
     retained = {key: {s[: max_length - 2] for s in seqs} for key, seqs in splits.items()}
     keys = list(retained)
@@ -89,7 +91,10 @@ def run(data_path, output, epochs=3, seed=42, max_length=64):
     datasets = {k: SequenceDataset(v, max_length) for k, v in splits.items()}
     loaders = {
         k: DataLoader(
-            v, batch_size=8, shuffle=k == "train", generator=torch.Generator().manual_seed(seed)
+            v,
+            batch_size=8,
+            shuffle=k == "train",
+            generator=torch.Generator().manual_seed(seed),
         )
         for k, v in datasets.items()
     }
@@ -130,6 +135,7 @@ def run(data_path, output, epochs=3, seed=42, max_length=64):
         if result["nll"] < best:
             best = result["nll"]
             best_weights = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    assert best_weights is not None, "Training must select validation weights"
     model.load_state_dict(best_weights)
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -163,7 +169,13 @@ def run(data_path, output, epochs=3, seed=42, max_length=64):
         json.dumps(
             {
                 k: report[k]
-                for k in ["raw_rows", "unique_sequences", "split_counts", "test", "limitations"]
+                for k in [
+                    "raw_rows",
+                    "unique_sequences",
+                    "split_counts",
+                    "test",
+                    "limitations",
+                ]
             },
             indent=2,
         )
