@@ -233,17 +233,22 @@ export default function App() {
           <div>
             <p className="eyebrow">
               <span />
-              EXPLORATIONS IN PROTEIN SEQUENCES
+              PROTOGEN · PROTEIN SEQUENCE GENERATOR
             </p>
             <h1 id="proto-title">
-              Sequence,
+              Write new
               <br />
-              <em>by design.</em>
+              <em>protein sequences.</em>
             </h1>
             <p className="hero-description">
-              Shape the composition.
+              Proteins are chains of 20 building blocks (amino acids), each
+              written as a letter. A small AI model I trained on 68 real
+              proteins writes new chains one letter at a time.
               <br />
-              Explore what comes next.
+              <br />
+              How to use: 1. Move the sliders to change the mix of letters. 2.
+              Click Generate sequences. 3. Copy a sequence or download them as
+              a FASTA file.
             </p>
           </div>
           <div className="hero-map">
@@ -266,12 +271,12 @@ export default function App() {
         >
           <form className="control-panel" onSubmit={generate}>
             <div className="panel-heading">
-              <h2>Set the balance.</h2>
+              <h2>1. Set the mix</h2>
               <span>5 CONTROLS</span>
             </div>
             <p className="control-note">
-              These controls tune composition proxies, not experimentally
-              verified biological traits.
+              Each slider nudges which letters the model favors. They are
+              rough proxies, not lab-tested protein properties.
             </p>
             <fieldset disabled={loading} className="composition-controls">
               <legend className="sr-only">Composition controls</legend>
@@ -443,20 +448,21 @@ export default function App() {
                 <h2>
                   {loading ? (
                     <>
-                      Finding the
+                      Writing
                       <br />
-                      next sequence.
+                      sequences…
                     </>
                   ) : (
                     <>
-                      A blank canvas.
-                      <br />A new sequence.
+                      Your sequences
+                      <br />
+                      appear here.
                     </>
                   )}
                 </h2>
                 <p>
-                  Adjust the five composition controls and generate a batch.
-                  Your sequences will appear here, ready to inspect and export.
+                  Set the sliders, then click Generate sequences. Each result
+                  can be copied or downloaded.
                 </p>
                 <div className="empty-bottom">
                   <span>20 BUILDING BLOCKS</span>
@@ -486,14 +492,15 @@ export default function App() {
           <p className="eyebrow">THE EXPERIMENT</p>
           <div>
             <h2>
-              A small model.
+              How it was
               <br />
-              An open process.
+              trained.
             </h2>
             <p>
-              This studio explores a causal sequence model trained on a small,
-              deduplicated dataset. The full training protocol, evaluation, and
-              limitations are documented alongside the code.
+              The model is a small transformer (the same kind of model behind
+              chatbots) trained on 68 unique protein sequences (after removing
+              duplicates). It beat a simple guessing baseline by about 2%. The
+              sequences are not tested in a lab.
             </p>
             <a href={source} target="_blank" rel="noreferrer">
               Read the experiment <Icon kind="arrow" />
